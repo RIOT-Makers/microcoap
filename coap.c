@@ -58,6 +58,34 @@ static void _option_decode(const uint32_t value, uint8_t *delta)
     }
 }
 
+
+
+// https://tools.ietf.org/html/rfc7252#section-5.10.3
+// https://tools.ietf.org/html/rfc7252#section-5.10.4
+bool _handle_specific_content_format(coap_resource_t *rs, const coap_option_t *opt, 
+    const coap_packet_t *inpkt, coap_packet_t *pkt)
+{
+    // TODO: make this debug-only
+    /*
+    printf("Reaching CONTENT-FORMAT handler: %x.%x == %x.%x / len %d\r\n", 
+        opt->buf.p[0], opt->buf.p[1],
+        rs->content_type[0], rs->content_type[1],
+        opt->buf.len); */
+
+    if(opt->buf.p[0] == rs->content_type[1])
+    {
+        if(opt->buf.len == 2)
+            if(opt->buf.p[1] != rs->content_type[0]) return false;
+            
+        rs->state = rs->handler(rs, inpkt, pkt);
+        return true;
+    }
+    
+    return false;
+}
+
+
+
 /* --- PUBLIC --------------------------------------------------------------- */
 coap_state_t coap_build(const coap_packet_t *pkt, uint8_t *buf, size_t *buflen)
 {
@@ -220,13 +248,27 @@ coap_state_t coap_make_response(const uint16_t msgid,
     return COAP_RSP_SEND;
 }
 
+
 coap_state_t coap_handle_request(coap_resource_t *resources,
                                  const coap_packet_t *inpkt,
                                  coap_packet_t *pkt)
 {
-    uint8_t count;
+    uint8_t count, count_accept, count_cf;
     coap_responsecode_t rspcode = COAP_RSPCODE_NOT_IMPLEMENTED;
     const coap_option_t *opt = _find_options(inpkt, COAP_OPTION_URI_PATH, &count);
+    // https://tools.ietf.org/html/rfc7252#section-5.10.4
+    const coap_option_t *opt_accept;
+    // https://tools.ietf.org/html/rfc7252#section-5.10.3
+    // Content-Format mode is like Accept, but the difference is this:
+    // Accept *demands* a particular content-type, while Content-Format merely asks
+    const coap_option_t *opt_cf;
+    coap_resource_t *rs_bestfit = NULL; // for Content-Format mode
+
+    // Not super efficient to do many distinct _find_options, 
+    // but we'll optimize another time :)
+    opt_accept = _find_options(inpkt, COAP_OPTION_ACCEPT, &count_accept);
+    opt_cf = _find_options(inpkt, COAP_OPTION_CONTENT_FORMAT, &count_cf);
+
     // find handler for requested resource
     for (coap_resource_t *rs = resources; rs->handler && opt; ++rs) {
         if ((rs->method == inpkt->hdr.code) && (count == rs->path->count)){
@@ -244,35 +286,25 @@ coap_state_t coap_handle_request(coap_resource_t *resources,
                     rs->state = coap_make_ack(inpkt, pkt);
                 }
                 else {
-                    // https://tools.ietf.org/html/rfc7252#section-5.10.4
-                    // Not super efficient to do two distinct _find_options, 
-                    // & having this one semi-recursive but we'll optimize another time :)
-                    const coap_option_t *opt_accept = _find_options(inpkt, COAP_OPTION_ACCEPT, &count);
                     if(opt_accept) // Accept activated, particular Content-Format requested
                     {
-                        printf("Reaching ACCEPT handler: %x.%x == %x.%x / len %d\r\n", 
-                            opt_accept[0].buf.p[0], opt_accept[0].buf.p[1],
-                            rs->content_type[0], rs->content_type[1],
-                            opt_accept[0].buf.len);
-                        
-                        if(opt_accept[0].buf.len == 1)
-                        {
-                            if(opt_accept[0].buf.p[0] == rs->content_type[1])
-                            {
-                                rs->state = rs->handler(rs, inpkt, pkt);
-                                return rs->state;
-                            }
-                        }
+                        if(_handle_specific_content_format(rs, opt_accept, inpkt, pkt))
+                            return rs->state;
+
                         // default the failure code now to NOT ACCEPTABLE, and fall thru to next
                         // resource.  If no resources can pick this up, a not acceptable will then
                         // be returned
-                        else if(memcmp(opt_accept[0].buf.p, rs->content_type, 2) == 0)
-                        {
-                            rs->state = rs->handler(rs, inpkt, pkt);
-                            return rs->state;
-                        }
                         rspcode = COAP_RSPCODE_NOT_ACCEPTABLE;
                         continue;
+                    }
+                    else if(opt_cf) // Content-Format mode activated
+                    {
+                        rs_bestfit = rs;
+                        if(_handle_specific_content_format(rs, opt_cf, inpkt, pkt))
+                            return rs->state;
+                            
+                        continue;
+                        // Keep looking, default will route through rs_bestfit
                     }
                     else
                         rs->state = rs->handler(rs, inpkt, pkt);
@@ -284,6 +316,13 @@ coap_state_t coap_handle_request(coap_resource_t *resources,
         else {
             rspcode = COAP_RSPCODE_METHOD_NOT_ALLOWED;
         }
+    }
+    
+    // Content-Format mode 
+    if(opt_cf && rs_bestfit)
+    {
+        rs_bestfit->state = rs_bestfit->handler(rs_bestfit, inpkt, pkt);
+        return rs_bestfit->state;
     }
     return coap_make_response(inpkt->hdr.id, &inpkt->tok,
                               COAP_TYPE_ACK, rspcode,
