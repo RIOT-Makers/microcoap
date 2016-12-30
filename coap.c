@@ -334,12 +334,31 @@ coap_state_t coap_make_link_format(const coap_resource_t *resources,
     // loop over resources
     int len = buflen - 1;
     const coap_resource_t *rs_prev = NULL;
-    for (const coap_resource_t *rs = resources; rs->handler; ++rs) {
+    for (const coap_resource_t *rs = resources; rs->handler; (rs_prev = rs, ++rs)) {
         if (0 > len)
             return COAP_ERR_BUFFER_TOO_SMALL;
+        
         // skip if missing content type
         if (COAP_CONTENTTYPE_NONE == COAP_GET_CONTENTTYPE(rs->content_type))
             continue;
+
+        // if we're servicing the exact same path on this resource as the
+        // previous resource
+        if(rs_prev != NULL && rs_prev->path == rs->path)
+        {
+            // shouldn't this be uint16_t?
+            int16_t content_type = COAP_GET_CONTENTTYPE(rs->content_type);
+            
+            // *AND* we haven't already reported this particular content type
+            if(content_type != COAP_GET_CONTENTTYPE(rs_prev->content_type))
+            // then we expect this is a different content type handler,
+            // and append according to the end of https://tools.ietf.org/html/draft-ietf-core-coap-01#section-6.1
+            // superseded by https://tools.ietf.org/html/rfc7252#section-7.2.1, so we space delimit
+            // also: sprintf big and sloppy, but powerful and cross platform.
+                len -= sprintf(buf + (buflen - len - 1), " %d", content_type);
+                           
+            continue;
+        }
         // comma separated list
         if (0 < strlen(buf)) {
             strncat(buf, ",", len);
@@ -358,6 +377,13 @@ coap_state_t coap_make_link_format(const coap_resource_t *resources,
         }
         // insert >; after path
         strncat(buf, ">;", len);
+        if(rs->attributes != NULL)
+        {
+            // Be sure to have a trailing ; !
+            // TODO: do a debug-only runtime check for above
+            strncat(buf, rs->attributes, len);
+            len -= strlen(rs->attributes);
+        }
         len -= 2;
         // append content type
         len -= sprintf(buf + (buflen - len - 1), "ct=%d",

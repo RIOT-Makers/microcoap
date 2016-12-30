@@ -284,6 +284,7 @@ struct coap_resource
     coap_resource_handler handler;      //!< callback function for method
     const coap_resource_path_t *path;   //!< resource path, e.g. foo/bar/
     const uint8_t content_type[2];      //!< content type of response
+    const char* attributes;             //!< link target attribute values (http://www.iana.org/assignments/core-parameters/core-parameters.xhtml)
 };
 
 /**
