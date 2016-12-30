@@ -244,7 +244,38 @@ coap_state_t coap_handle_request(coap_resource_t *resources,
                     rs->state = coap_make_ack(inpkt, pkt);
                 }
                 else {
-                    rs->state = rs->handler(rs, inpkt, pkt);
+                    // https://tools.ietf.org/html/rfc7252#section-5.10.4
+                    // Not super efficient to do two distinct _find_options, 
+                    // & having this one semi-recursive but we'll optimize another time :)
+                    const coap_option_t *opt_accept = _find_options(inpkt, COAP_OPTION_ACCEPT, &count);
+                    if(opt_accept) // Accept activated, particular Content-Format requested
+                    {
+                        printf("Reaching ACCEPT handler: %x.%x == %x.%x / len %d\r\n", 
+                            opt_accept[0].buf.p[0], opt_accept[0].buf.p[1],
+                            rs->content_type[0], rs->content_type[1],
+                            opt_accept[0].buf.len);
+                        
+                        if(opt_accept[0].buf.len == 1)
+                        {
+                            if(opt_accept[0].buf.p[0] == rs->content_type[1])
+                            {
+                                rs->state = rs->handler(rs, inpkt, pkt);
+                                return rs->state;
+                            }
+                        }
+                        // default the failure code now to NOT ACCEPTABLE, and fall thru to next
+                        // resource.  If no resources can pick this up, a not acceptable will then
+                        // be returned
+                        else if(memcmp(opt_accept[0].buf.p, rs->content_type, 2) == 0)
+                        {
+                            rs->state = rs->handler(rs, inpkt, pkt);
+                            return rs->state;
+                        }
+                        rspcode = COAP_RSPCODE_NOT_ACCEPTABLE;
+                        continue;
+                    }
+                    else
+                        rs->state = rs->handler(rs, inpkt, pkt);
                 }
                 return rs->state;
             }
@@ -302,6 +333,7 @@ coap_state_t coap_make_link_format(const coap_resource_t *resources,
     memset(buf,0,buflen);
     // loop over resources
     int len = buflen - 1;
+    const coap_resource_t *rs_prev = NULL;
     for (const coap_resource_t *rs = resources; rs->handler; ++rs) {
         if (0 > len)
             return COAP_ERR_BUFFER_TOO_SMALL;
