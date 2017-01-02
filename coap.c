@@ -65,12 +65,12 @@ static void _option_decode(const uint32_t value, uint8_t *delta)
 bool _handle_specific_content_format(coap_resource_t *rs, const coap_option_t *opt, 
     const coap_packet_t *inpkt, coap_packet_t *pkt)
 {
-    // TODO: make this debug-only
-    /*
+#if YACOAP_DEBUG
     printf("Reaching CONTENT-FORMAT handler: %x.%x == %x.%x / len %d\r\n", 
         opt->buf.p[0], opt->buf.p[1],
         rs->content_type[0], rs->content_type[1],
-        opt->buf.len); */
+        opt->buf.len);
+#endif
 
     if(opt->buf.p[0] == rs->content_type[1])
     {
